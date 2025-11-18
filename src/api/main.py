@@ -22,31 +22,34 @@ app.add_middleware(
 )
 
 
-print("Loading Model and preprocessor...")
+print("Loading multi-class model and preprocessor...")
 try:
-    import os
-    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    model = joblib.load(os.path.join(base_dir, 'models', 'random_forest.pkl'))
-    preprocessor_data = joblib.load(os.path.join(base_dir, 'models', 'preprocessor.pkl'))
+    model = joblib.load('../../models/random_forest_multiclass.pkl')
+    preprocessor_data = joblib.load('../../models/preprocessor_multiclass.pkl')
     scaler = preprocessor_data['scaler']
     feature_columns = preprocessor_data['feature_columns']
-    print(f" Model loaded")
-    print(f" Expecting {len(feature_columns)} features")
+    label_encoder = preprocessor_data['label_encoder']
+    classes = list(preprocessor_data['classes'])
+    print(f" Multi-class model loaded")
+    print(f" Detecting {len(classes)} attack types: {', '.join(classes[:5])}...")
 except Exception as e:
     print(f"Error loading model: {e}")
     model = None
     scaler = None
     feature_columns = None
+    label_encoder = None
+    classes = None
 
 
 class PredictionResponse(BaseModel):
-    prediction: str = Field(..., description="BENIGN or ATTACK")
+    prediction: str = Field(..., description="Attack type or BENIGN")
+    attack_type: str = Field(..., description="Specific attack classification")
     confidence: float = Field(..., description="Confidence score (0-1)")
-    attack_probability: float = Field(..., description="Probability this is an attack (0-1)")
-    benign_probability: float = Field(..., description="Probability this is benign (0-1)")
-    model_used: str = Field(..., description="Which model made the prediction")
-    timestamp: str = Field(..., description="When prediction was made")
-    warning: Optional[str] = Field(None, description="Any warnings about the prediction")
+    is_attack: bool = Field(..., description="True if any attack detected")
+    top_3_predictions: dict = Field(..., description="Top 3 most likely classes with probabilities")
+    model_used: str = Field(..., description="Model version")
+    timestamp: str = Field(..., description="Prediction timestamp")
+    warning: Optional[str] = Field(None, description="Any warnings")
 
 
 class NetworkFlowFull(BaseModel):
@@ -89,8 +92,11 @@ def health_check():
     return {
         "status": "healthy",
         "model_loaded": True,
-        "features_expected": len(feature_columns) if feature_columns else 0,
-        "model_type": "Random Forest Classifier"
+        "model_type": "Random Forest Multi-Class Classifier",
+        "accuracy": "99.47%",
+        "attack_types_detected": len(classes) if classes else 0,
+        "classes": classes[:10] if classes else [],
+        "features_expected": len(feature_columns) if feature_columns else 0
     }
 
 
@@ -111,20 +117,34 @@ def predict_full(flow: NetworkFlowFull):
         
         input_df = input_df[feature_columns]
         input_scaled = scaler.transform(input_df)
-        prediction = model.predict(input_scaled)[0]
+        
+        prediction_encoded = model.predict(input_scaled)[0]
+        prediction_label = label_encoder.inverse_transform([prediction_encoded])[0]
         probabilities = model.predict_proba(input_scaled)[0]
         
+        top_3_indices = np.argsort(probabilities)[-3:][::-1]
+        top_3_predictions = {
+            classes[i]: float(probabilities[i]) 
+            for i in top_3_indices
+        }
+        
+        is_attack = prediction_label != "BENIGN"
+        
         result = PredictionResponse(
-            prediction="ATTACK" if prediction == 1 else "BENIGN",
+            prediction=prediction_label,
+            attack_type=prediction_label if is_attack else "None",
             confidence=float(max(probabilities)),
-            attack_probability=float(probabilities[1]),
-            benign_probability=float(probabilities[0]),
-            model_used="Random Forest (99.99% accuracy)",
+            is_attack=is_attack,
+            top_3_predictions=top_3_predictions,
+            model_used="Random Forest Multi-Class (99.47% accuracy, 15 attack types)",
             timestamp=datetime.now().isoformat()
         )
-
+        
         if result.confidence < 0.7:
             result.warning = "Low confidence prediction - manual review recommended"
+        
+        if prediction_label in ["Bot", "Web Attack - XSS", "Web Attack - Sql Injection", "Heartbleed"]:
+            result.warning = f"{prediction_label} detection has higher false positive rate - verify manually"
         
         return result
         
