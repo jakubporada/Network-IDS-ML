@@ -1,7 +1,3 @@
-// CSVAnalysis.js
-// Upload and analyze CSV files with network traffic data
-// Processes files row by row and sends to backend for predictions
-
 import React, { useState } from 'react';
 import axios from 'axios';
 import '../App.css';
