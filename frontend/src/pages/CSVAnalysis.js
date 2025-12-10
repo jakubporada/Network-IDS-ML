@@ -1,8 +1,7 @@
 import React, { useState } from 'react';
 import axios from 'axios';
 import '../App.css';
-
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+import { API_ENDPOINTS } from '../config';
 
 function CSVAnalysis() {
   const [file, setFile] = useState(null);
@@ -81,7 +80,7 @@ function CSVAnalysis() {
 
       for (let i = 0; i < flows.length; i++) {
         try {
-          const response = await axios.post('${API_URL}/predict/full', {
+          const response = await axios.post(API_ENDPOINTS.predictFull, {
             features: flows[i]
           });
 

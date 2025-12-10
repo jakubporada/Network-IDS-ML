@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import '../App.css';
-
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+import { API_URL, API_ENDPOINTS } from '../config';
 
 function Settings() {
   const [stats, setStats] = useState({
@@ -37,7 +36,7 @@ function Settings() {
 
   const checkAPIStatus = async () => {
     try {
-      const response = await fetch('${API_URL}/health');
+      const response = await fetch(API_ENDPOINTS.health);
       if (response.ok) {
         setApiStatus('connected');
       } else {
