@@ -6,6 +6,7 @@ import joblib
 import numpy as np
 import pandas as pd
 from datetime import datetime
+import os
 
 app = FastAPI(
     title="Network Intrusion Detection API",
@@ -15,22 +16,26 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["*"], #changed for ec2
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+MODEL_PATH = '/app/models/random_forest_multiclass.pkl'
+PREPROCESSOR_PATH = '/app/models/preprocessor_multiclass.pkl'
 
 print("Loading multi-class model and preprocessor...")
 try:
-    model = joblib.load('../../models/random_forest_multiclass.pkl')
-    preprocessor_data = joblib.load('../../models/preprocessor_multiclass.pkl')
+    print(f"Loading model from: {MODEL_PATH}")
+    model = joblib.load(MODEL_PATH)
+    print(f"Loading preprocessor from: {PREPROCESSOR_PATH}")
+    preprocessor_data = joblib.load(PREPROCESSOR_PATH)
     scaler = preprocessor_data['scaler']
     feature_columns = preprocessor_data['feature_columns']
     label_encoder = preprocessor_data['label_encoder']
     classes = list(preprocessor_data['classes'])
-    print(f" Multi-class model loaded")
+    print(f" Multi-class model loaded successfully")
     print(f" Detecting {len(classes)} attack types: {', '.join(classes[:5])}...")
 except Exception as e:
     print(f"Error loading model: {e}")
@@ -51,6 +56,10 @@ class PredictionResponse(BaseModel):
     timestamp: str = Field(..., description="Prediction timestamp")
     warning: Optional[str] = Field(None, description="Any warnings")
 
+    model_config = {
+        "protected_namespaces": ()
+    }
+
 
 class NetworkFlowFull(BaseModel):
     features: dict = Field(..., description="Dictionary with all 78 feature names and values")
@@ -68,6 +77,28 @@ class NetworkFlowFull(BaseModel):
     }
 
 
+class NetworkFlowSimple(BaseModel):
+    destination_port: int
+    flow_duration: int
+    total_fwd_packets: int
+    total_backward_packets: int
+    flow_bytes_per_s: float
+    flow_packets_per_s: float
+    
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "destination_port": 80,
+                "flow_duration": 12000,
+                "total_fwd_packets": 10,
+                "total_backward_packets": 5,
+                "flow_bytes_per_s": 1500.5,
+                "flow_packets_per_s": 25.3
+            }
+        }
+    }
+
+
 @app.get("/")
 def root():
     return {
@@ -76,7 +107,7 @@ def root():
         "model_loaded": model is not None,
         "version": "1.0.0",
         "endpoints": {
-            "/predict/simple": "Predict with simplified feature set",
+            "/predict/simple": "Predict with 6 critical features",
             "/predict/full": "Predict with all 78 features",
             "/health": "Health check",
             "/docs": "Interactive API documentation"
@@ -150,6 +181,72 @@ def predict_full(flow: NetworkFlowFull):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}")
+
+
+@app.post("/predict/simple", response_model=PredictionResponse)
+def predict_simple(flow: NetworkFlowSimple):
+    if model is None or scaler is None or feature_columns is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+    
+    try:
+        full_features = {col: 0.0 for col in feature_columns}
+
+        feature_mapping = {
+            'Destination Port': flow.destination_port,
+            'Flow Duration': flow.flow_duration,
+            'Total Fwd Packets': flow.total_fwd_packets,
+            'Total Backward Packets': flow.total_backward_packets,
+            'Flow Bytes/s': flow.flow_bytes_per_s,
+            'Flow Packets/s': flow.flow_packets_per_s,
+        }
+
+        for feature_name, value in feature_mapping.items():
+            if feature_name in full_features:
+                full_features[feature_name] = value
+
+        total_packets = flow.total_fwd_packets + flow.total_backward_packets
+        full_features['Total Length of Fwd Packets'] = flow.total_fwd_packets * 500
+        full_features['Total Length of Bwd Packets'] = flow.total_backward_packets * 500
+
+        if total_packets > 0:
+            full_features['Fwd Packet Length Mean'] = 500
+            full_features['Bwd Packet Length Mean'] = 500
+            full_features['Flow IAT Mean'] = flow.flow_duration / max(total_packets, 1)
+
+        input_df = pd.DataFrame([full_features])
+        input_df = input_df[feature_columns]
+
+        input_scaled = scaler.transform(input_df)
+        prediction_encoded = model.predict(input_scaled)[0]
+        prediction_label = label_encoder.inverse_transform([prediction_encoded])[0]
+        probabilities = model.predict_proba(input_scaled)[0]
+
+        top_3_indices = np.argsort(probabilities)[-3:][::-1]
+        top_3_predictions = {
+            classes[i]: float(probabilities[i]) 
+            for i in top_3_indices
+        }
+        
+        is_attack = prediction_label != "BENIGN"
+
+        result = PredictionResponse(
+            prediction=prediction_label,
+            attack_type=prediction_label if is_attack else "None",
+            confidence=float(max(probabilities)),
+            is_attack=is_attack,
+            top_3_predictions=top_3_predictions,
+            model_used="Random Forest Multi-Class (Simplified Input)",
+            timestamp=datetime.now().isoformat()
+        )
+
+        if result.confidence < 0.6:
+            result.warning = "Low confidence with simplified features - results could be less accurate"
+
+        return result
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}")
+
 
 if __name__ == "__main__":
     import uvicorn
