@@ -3,6 +3,8 @@ import axios from 'axios';
 import '../App.css';
 import attackPatterns from './attack_patterns.json';
 
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+
 function LiveMonitoring() {
   // Load initial state from localStorage
   // TODO: maybe add export to CSV feature later?
@@ -194,8 +196,8 @@ function LiveMonitoring() {
       const packet = generateRandomPacket();
       
       const endpoint = useSimplifiedMode 
-        ? 'http://localhost:8000/predict/simple' 
-        : 'http://localhost:8000/predict/full';
+        ? '${API_URL}/predict/simple' 
+        : '${API_URL}/predict/full';
       
       let requestData;
       

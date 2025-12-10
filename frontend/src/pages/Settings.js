@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import '../App.css';
 
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+
 function Settings() {
   const [stats, setStats] = useState({
     totalDetections: 0,
@@ -35,7 +37,7 @@ function Settings() {
 
   const checkAPIStatus = async () => {
     try {
-      const response = await fetch('http://localhost:8000/health');
+      const response = await fetch('${API_URL}/health');
       if (response.ok) {
         setApiStatus('connected');
       } else {
@@ -168,7 +170,7 @@ function Settings() {
               <span style={styles.statusText}>{getStatusText(apiStatus)}</span>
             </div>
             <span style={styles.statusSubtext}>
-              {apiStatus === 'connected' ? 'FastAPI server running on localhost:8000' : 'Cannot reach FastAPI server'}
+              {apiStatus === 'connected' ? 'FastAPI server running on ${API_URL}' : 'Cannot reach FastAPI server'}
             </span>
           </div>
 

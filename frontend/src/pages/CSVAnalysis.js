@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import axios from 'axios';
 import '../App.css';
 
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+
 function CSVAnalysis() {
   const [file, setFile] = useState(null);
   const [results, setResults] = useState(null);
@@ -79,7 +81,7 @@ function CSVAnalysis() {
 
       for (let i = 0; i < flows.length; i++) {
         try {
-          const response = await axios.post('http://localhost:8000/predict/full', {
+          const response = await axios.post('${API_URL}/predict/full', {
             features: flows[i]
           });
 
