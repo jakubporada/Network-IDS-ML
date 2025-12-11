@@ -72,6 +72,10 @@ function CSVAnalysis() {
       const flows = parseCSV(text);
 
       console.log(`Processing ${flows.length} flows...`);
+      
+      if (flows.length === 0) {
+        throw new Error('No valid flows found in CSV file');
+      }
 
       const predictions = [];
       let attackCount = 0;
@@ -80,6 +84,7 @@ function CSVAnalysis() {
 
       for (let i = 0; i < flows.length; i++) {
         try {
+          console.log(`Calling API for flow ${i + 1}...`);
           const response = await axios.post(API_ENDPOINTS.predictFull, {
             features: flows[i]
           });
