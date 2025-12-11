@@ -25,7 +25,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        - REACT_APP_API_URL=http://184.73.67.44:8000
+        - REACT_APP_API_URL=http://52.204.244.97:8000
     container_name: ids-frontend
     ports:
       - "3000:80"
