@@ -1,7 +1,3 @@
-// Navigation.js
-// Sidebar navigation component
-// Keeps the active page highlighted
-
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
 

@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 import os
+from vpc_parser import get_flow_parser
 
 app = FastAPI(
     title="Network Intrusion Detection API",
@@ -16,7 +17,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], #changed for ec2
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -109,6 +110,8 @@ def root():
         "endpoints": {
             "/predict/simple": "Predict with 6 critical features",
             "/predict/full": "Predict with all 78 features",
+            "/flows/real": "Get real VPC Flow Logs",
+            "/analyze/vpc-flow": "Analyze real VPC traffic",
             "/health": "Health check",
             "/docs": "Interactive API documentation"
         }
@@ -183,6 +186,8 @@ def predict_full(flow: NetworkFlowFull):
         raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}")
 
 
+DEFAULT_PACKET_SIZE = 500
+
 @app.post("/predict/simple", response_model=PredictionResponse)
 def predict_simple(flow: NetworkFlowSimple):
     if model is None or scaler is None or feature_columns is None:
@@ -205,12 +210,12 @@ def predict_simple(flow: NetworkFlowSimple):
                 full_features[feature_name] = value
 
         total_packets = flow.total_fwd_packets + flow.total_backward_packets
-        full_features['Total Length of Fwd Packets'] = flow.total_fwd_packets * 500
-        full_features['Total Length of Bwd Packets'] = flow.total_backward_packets * 500
+        full_features['Total Length of Fwd Packets'] = flow.total_fwd_packets * DEFAULT_PACKET_SIZE
+        full_features['Total Length of Bwd Packets'] = flow.total_backward_packets * DEFAULT_PACKET_SIZE
 
         if total_packets > 0:
-            full_features['Fwd Packet Length Mean'] = 500
-            full_features['Bwd Packet Length Mean'] = 500
+            full_features['Fwd Packet Length Mean'] = DEFAULT_PACKET_SIZE
+            full_features['Bwd Packet Length Mean'] = DEFAULT_PACKET_SIZE
             full_features['Flow IAT Mean'] = flow.flow_duration / max(total_packets, 1)
 
         input_df = pd.DataFrame([full_features])
@@ -246,6 +251,87 @@ def predict_simple(flow: NetworkFlowSimple):
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}")
+
+
+@app.get("/flows/real")
+async def get_real_flows():
+    try:
+        parser = get_flow_parser()
+        flows = parser.get_recent_flows(minutes=30)
+        
+        return {
+            "status": "success",
+            "source": "AWS VPC Flow Logs",
+            "flows": flows,
+            "total": len(flows),
+            "message": f"Retrieved {len(flows)} real network flows from the last 30 minutes"
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error retrieving VPC Flow Logs: {str(e)}"
+        )
+
+
+@app.post("/analyze/vpc-flow")
+async def analyze_vpc_flow(flow_index: int = 0):
+    if model is None or scaler is None or feature_columns is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+    
+    try:
+        parser = get_flow_parser()
+        flows = parser.get_recent_flows(minutes=30)
+        
+        if not flows:
+            raise HTTPException(
+                status_code=404, 
+                detail="No VPC Flow Logs found. Wait a few minutes for logs to accumulate."
+            )
+        
+        if flow_index >= len(flows):
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Flow index {flow_index} not found. Only {len(flows)} flows available."
+            )
+        
+        flow = flows[flow_index]
+        
+        features = parser.flow_to_ml_features(flow)
+        
+        input_df = pd.DataFrame([features])
+        input_df = input_df[feature_columns]
+        input_scaled = scaler.transform(input_df)
+        
+        prediction_encoded = model.predict(input_scaled)[0]
+        prediction_label = label_encoder.inverse_transform([prediction_encoded])[0]
+        probabilities = model.predict_proba(input_scaled)[0]
+        
+        top_3_indices = np.argsort(probabilities)[-3:][::-1]
+        top_3_predictions = {
+            classes[i]: float(probabilities[i]) 
+            for i in top_3_indices
+        }
+        
+        is_attack = prediction_label != "BENIGN"
+        
+        return {
+            "source": "Real VPC Flow Log",
+            "raw_flow": flow,
+            "prediction": prediction_label,
+            "attack_type": prediction_label if is_attack else "None",
+            "confidence": float(max(probabilities)),
+            "is_attack": is_attack,
+            "top_3_predictions": top_3_predictions,
+            "timestamp": datetime.now().isoformat(),
+            "message": "Network Traffic"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error analyzing VPC flow: {str(e)}"
+        )
 
 
 if __name__ == "__main__":

@@ -1,4 +1,3 @@
-// pages/History.js
 import React, { useState, useEffect } from 'react';
 import '../App.css';
 
@@ -22,11 +21,11 @@ function History() {
     loadHistory();
     const interval = setInterval(loadHistory, 5000);
     return () => clearInterval(interval);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     applyFilters();
-  }, [alerts, sourceFilter, typeFilter, dateFilter, searchQuery]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [alerts, sourceFilter, typeFilter, dateFilter, searchQuery]);
 
   const loadHistory = () => {
     try {
@@ -48,14 +47,11 @@ function History() {
     const byDate = {};
 
     alertsData.forEach(alert => {
-      // By type
       byType[alert.prediction] = (byType[alert.prediction] || 0) + 1;
 
-      // By source
       const source = alert.source || 'Unknown';
       bySource[source] = (bySource[source] || 0) + 1;
 
-      // By date (group by day)
       const date = new Date(alert.timestamp).toLocaleDateString();
       byDate[date] = (byDate[date] || 0) + 1;
     });
@@ -71,17 +67,14 @@ function History() {
   const applyFilters = () => {
     let filtered = [...alerts];
 
-    // Source filter
     if (sourceFilter !== 'all') {
       filtered = filtered.filter(a => (a.source || 'Unknown') === sourceFilter);
     }
 
-    // Type filter
     if (typeFilter !== 'all') {
       filtered = filtered.filter(a => a.prediction === typeFilter);
     }
 
-    // Date filter
     if (dateFilter !== 'all') {
       const now = new Date();
       const filterDate = new Date();
@@ -97,7 +90,6 @@ function History() {
       filtered = filtered.filter(a => new Date(a.timestamp) >= filterDate);
     }
 
-    // Search filter
     if (searchQuery) {
       const query = searchQuery.toLowerCase();
       filtered = filtered.filter(a =>
@@ -107,11 +99,10 @@ function History() {
       );
     }
 
-    // Sort by newest first
     filtered.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
     setFilteredAlerts(filtered);
-    setCurrentPage(1); // Reset to first page when filters change
+    setCurrentPage(1);
   };
 
   const exportToCSV = () => {
@@ -167,7 +158,6 @@ function History() {
     return colors[attackType] || '#dc2626';
   };
 
-  // Pagination
   const indexOfLastItem = currentPage * itemsPerPage;
   const indexOfFirstItem = indexOfLastItem - itemsPerPage;
   const currentItems = filteredAlerts.slice(indexOfFirstItem, indexOfLastItem);

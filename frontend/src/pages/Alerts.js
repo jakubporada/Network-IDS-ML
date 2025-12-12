@@ -1,4 +1,3 @@
-// pages/Alerts.js
 import React, { useState, useEffect } from 'react';
 import '../App.css';
 
@@ -36,19 +35,16 @@ function Alerts() {
   const applyFilters = () => {
     let filtered = [...alerts];
 
-    // Status filter
     if (statusFilter === 'active') {
       filtered = filtered.filter(a => !a.reviewed);
     } else if (statusFilter === 'reviewed') {
       filtered = filtered.filter(a => a.reviewed);
     }
 
-    // Type filter
     if (typeFilter !== 'all') {
       filtered = filtered.filter(a => a.prediction === typeFilter);
     }
 
-    // Search filter
     if (searchQuery) {
       const query = searchQuery.toLowerCase();
       filtered = filtered.filter(a =>
@@ -58,7 +54,6 @@ function Alerts() {
       );
     }
 
-    // Sort
     filtered.sort((a, b) => {
       if (sortBy === 'timestamp-desc') {
         return new Date(b.timestamp) - new Date(a.timestamp);
