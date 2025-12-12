@@ -11,9 +11,13 @@ COPY ./src/api/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY ./src/api/main.py .
+COPY ./src/api/vpc_parser.py .
 
 COPY ./models ./models
 
 EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD curl --fail http://localhost:8000/health || exit 1
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
