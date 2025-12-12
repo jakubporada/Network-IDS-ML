@@ -10,6 +10,7 @@ services:
       - PYTHONUNBUFFERED=1
       - MODEL_PATH=/app/models/random_forest_multiclass.pkl
       - PREPROCESSOR_PATH=/app/models/preprocessor_multiclass.pkl
+      - VPC_FLOW_BUCKET=network-ids-flow-logs-jakub
     restart: unless-stopped
     networks:
       - ids-network
