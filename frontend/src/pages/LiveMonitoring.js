@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
 import '../App.css';
 import attackPatterns from './attack_patterns.json';
-import { API_ENDPOINTS } from '../config';
+import { API_ENDPOINTS, API_URL } from '../config';
 
 function LiveMonitoring() {
   // Load initial state from localStorage
@@ -14,6 +14,7 @@ function LiveMonitoring() {
         return {
           isMonitoring: state.isMonitoring || false,
           useSimplifiedMode: state.useSimplifiedMode || false,
+          useRealVPCData: state.useRealVPCData || false,
           stats: state.stats || { total: 0, threats: 0, safe: 0, sessionStart: null },
           packetCounter: state.packetCounter || 0,
           livePackets: state.livePackets || []
@@ -25,6 +26,7 @@ function LiveMonitoring() {
     return {
       isMonitoring: false,
       useSimplifiedMode: false,
+      useRealVPCData: false,
       stats: { total: 0, threats: 0, safe: 0, sessionStart: null },
       packetCounter: 0,
       livePackets: []
@@ -37,22 +39,29 @@ function LiveMonitoring() {
   const [livePackets, setLivePackets] = useState(initialState.livePackets);
   const [stats, setStats] = useState(initialState.stats);
   const [useSimplifiedMode, setUseSimplifiedMode] = useState(initialState.useSimplifiedMode);
+  const [useRealVPCData, setUseRealVPCData] = useState(initialState.useRealVPCData);
+  const [vpcFlows, setVpcFlows] = useState([]);
+  const [currentVPCIndex, setCurrentVPCIndex] = useState(0);
+  const [vpcError, setVpcError] = useState(null);
+  const [packetsPerSecond, setPacketsPerSecond] = useState(0);
   const intervalRef = useRef(null);
   const packetCounterRef = useRef(initialState.packetCounter);
   const lastCaptureTimeRef = useRef(Date.now());
   const isMonitoringRef = useRef(initialState.isMonitoring);
+  const captureTimesRef = useRef([]);
 
   useEffect(() => {
     const stateToSave = {
       isMonitoring,
       useSimplifiedMode,
+      useRealVPCData,
       stats,
       packetCounter: packetCounterRef.current,
       livePackets: livePackets.slice(0, 10),
       lastUpdate: Date.now()
     };
     localStorage.setItem('live-monitoring-state', JSON.stringify(stateToSave));
-  }, [isMonitoring, useSimplifiedMode, stats, livePackets]);
+  }, [isMonitoring, useSimplifiedMode, useRealVPCData, stats, livePackets]);
 
   useEffect(() => {
     if (initialState.isMonitoring && !intervalRef.current) {
@@ -246,8 +255,118 @@ function LiveMonitoring() {
     }
   };
 
-  const startMonitoring = () => {
+  // Fetch real AWS VPC Flow Logs from backend
+  const fetchVPCFlows = async () => {
+    try {
+      setVpcError(null);
+      console.log('🔄 Fetching real AWS VPC Flow Logs...');
+      const response = await axios.get(API_ENDPOINTS.flowsReal);
+      
+      if (response.data && response.data.flows && response.data.flows.length > 0) {
+        setVpcFlows(response.data.flows);
+        setCurrentVPCIndex(0);
+        console.log(`✅ Loaded ${response.data.flows.length} VPC flows from AWS S3`);
+        return true;
+      } else {
+        const errorMsg = 'No VPC flows available. Check if VPC Flow Logs are enabled and publishing to S3.';
+        setVpcError(errorMsg);
+        console.warn('⚠️', errorMsg);
+        return false;
+      }
+    } catch (error) {
+      const errorMsg = `Failed to fetch VPC flows: ${error.message}`;
+      console.error('❌', errorMsg);
+      setVpcError(errorMsg);
+      return false;
+    }
+  };
+
+  // Capture and analyze real VPC flow
+  const captureVPCFlow = async () => {
+    if (!vpcFlows || vpcFlows.length === 0) {
+      console.warn('No VPC flows loaded');
+      return;
+    }
+
+    try {
+      packetCounterRef.current += 1;
+      const flowIndex = currentVPCIndex;
+      const flow = vpcFlows[flowIndex];
+
+      // Analyze VPC flow with ML model
+      console.log(`🔍 Analyzing VPC flow ${flowIndex + 1}/${vpcFlows.length}`);
+      const response = await axios.post(
+        `${API_ENDPOINTS.analyzeVPCFlow}?flow_index=${flowIndex}`
+      );
+
+      // Build packet display data from VPC flow + ML prediction
+      const packetData = {
+        id: Date.now() + Math.random(),
+        packetNumber: packetCounterRef.current,
+        timestamp: new Date().toISOString(),
+        mode: 'VPC Flow',
+        dataSource: `AWS VPC (${response.data.source || 'Real Traffic'})`,
+        
+        // VPC Flow Log fields
+        source_ip: flow.srcaddr || 'N/A',
+        dest_ip: flow.dstaddr || 'N/A',
+        source_port: flow.srcport || 'N/A',
+        destination_port: flow.dstport || 'N/A',
+        protocol: flow.protocol || 'N/A',
+        action: flow.action || 'N/A',  // ACCEPT or REJECT
+        bytes: flow.bytes || 0,
+        packets: flow.packets || 0,
+        flow_duration: flow.duration || 0,
+        
+        // ML prediction results
+        is_attack: response.data.is_attack,
+        attack_type: response.data.attack_type,
+        confidence: response.data.confidence,
+        top_features: response.data.top_features || []
+      };
+
+      setLivePackets(prev => [packetData, ...prev].slice(0, 20));
+
+      setStats(prev => ({
+        ...prev,
+        total: prev.total + 1,
+        threats: packetData.is_attack ? prev.threats + 1 : prev.threats,
+        safe: packetData.is_attack ? prev.safe : prev.safe + 1
+      }));
+
+      // Track packets per second
+      const now = Date.now();
+      captureTimesRef.current.push(now);
+      captureTimesRef.current = captureTimesRef.current.filter(t => now - t < 10000);
+      setPacketsPerSecond((captureTimesRef.current.length / 10).toFixed(2));
+
+      if (packetData.is_attack) {
+        addThreatToAlerts(packetData);
+        console.log(`🚨 THREAT DETECTED: ${packetData.attack_type} (${(packetData.confidence * 100).toFixed(1)}% confidence)`);
+      } else {
+        console.log(`✅ Safe traffic: ${packetData.source_ip} → ${packetData.dest_ip}`);
+      }
+
+      // Move to next flow (loop back if at end)
+      setCurrentVPCIndex((flowIndex + 1) % vpcFlows.length);
+
+    } catch (error) {
+      console.error('❌ Error analyzing VPC flow:', error);
+    }
+  };
+
+  const startMonitoring = async () => {
     if(intervalRef.current) return;
+
+    // If using real VPC data, fetch flows first
+    if (useRealVPCData) {
+      console.log('🚀 Starting VPC Flow monitoring...');
+      const success = await fetchVPCFlows();
+      if (!success) {
+        alert('Failed to load AWS VPC Flow Logs. Check:\n1. VPC Flow Logs are enabled\n2. Logs are publishing to S3\n3. Backend has S3 access\n4. Backend container is running');
+        return;
+      }
+    }
 
     setIsMonitoring(true);
     setStats(prev => ({ 
@@ -256,9 +375,14 @@ function LiveMonitoring() {
     }));
     packetCounterRef.current = 0;
 
-    capturePacket();
-
-    intervalRef.current = setInterval(capturePacket, 3000);
+    // Capture first packet immediately
+    if (useRealVPCData) {
+      captureVPCFlow();
+      intervalRef.current = setInterval(captureVPCFlow, 3000);
+    } else {
+      capturePacket();
+      intervalRef.current = setInterval(capturePacket, 3000);
+    }
   };
 
   const stopMonitoring = () => {
@@ -271,6 +395,7 @@ function LiveMonitoring() {
     localStorage.setItem('live-monitoring-state', JSON.stringify({
       isMonitoring: false,
       useSimplifiedMode,
+      useRealVPCData,
       stats,
       packetCounter: packetCounterRef.current,
       livePackets: livePackets.slice(0, 10),
@@ -281,10 +406,14 @@ function LiveMonitoring() {
   const clearPackets = () => {
     setLivePackets([]);
     setStats({ total: 0, threats: 0, safe: 0, sessionStart: null });
+    setPacketsPerSecond(0);
     packetCounterRef.current = 0;
+    setCurrentVPCIndex(0);
+    captureTimesRef.current = [];
     localStorage.setItem('live-monitoring-state', JSON.stringify({
       isMonitoring,
       useSimplifiedMode,
+      useRealVPCData,
       stats: { total: 0, threats: 0, safe: 0, sessionStart: null },
       packetCounter: 0,
       livePackets: [],
@@ -336,6 +465,52 @@ function LiveMonitoring() {
 
       {/* Control Panel */}
       <div style={styles.controlPanel}>
+        {/* Data Source Toggle - AWS VPC vs Simulated */}
+        <div style={styles.modeToggle}>
+          <label style={styles.toggleLabel}>
+            <div 
+              style={{
+                ...styles.toggleSlider,
+                backgroundColor: useRealVPCData ? '#10b981' : '#d1d5db'
+              }}
+              onClick={() => !isMonitoring && setUseRealVPCData(!useRealVPCData)}
+            >
+              <div 
+                style={{
+                  ...styles.toggleThumb,
+                  transform: useRealVPCData ? 'translateX(24px)' : 'translateX(0px)'
+                }}
+              />
+            </div>
+            <input
+              type="checkbox"
+              checked={useRealVPCData}
+              onChange={(e) => setUseRealVPCData(e.target.checked)}
+              style={styles.toggleInput}
+              disabled={isMonitoring}
+            />
+            <span style={styles.toggleText}>
+              {useRealVPCData ? '✅ Real AWS VPC Flow Logs' : '⚙️ Simulated Attack Patterns'}
+            </span>
+          </label>
+          <p style={styles.modeDescription}>
+            {useRealVPCData 
+              ? '🔴 LIVE: Analyzing actual network traffic from your AWS VPC Flow Logs stored in S3'
+              : 'Using pre-recorded CICIDS2017 attack patterns for testing and demonstration'
+            }
+          </p>
+          {useRealVPCData && vpcFlows.length > 0 && (
+            <p style={{...styles.modeDescription, color: '#10b981', fontWeight: 'bold'}}>
+              📊 {vpcFlows.length} VPC flows loaded and ready for analysis
+            </p>
+          )}
+          {vpcError && (
+            <p style={{...styles.modeDescription, color: '#ef4444', fontWeight: 'bold'}}>
+              ⚠️ {vpcError}
+            </p>
+          )}
+        </div>
+
         {/* Monitoring Mode Toggle */}
         <div style={styles.modeToggle}>
           <label style={styles.toggleLabel}>
@@ -424,6 +599,9 @@ function LiveMonitoring() {
         <div style={{...styles.statCard, borderTopColor: '#3b82f6'}}>
           <h3 style={styles.statLabel}>Total Packets</h3>
           <p style={styles.statNumber}>{stats.total}</p>
+          <span style={styles.statPercent}>
+            {packetsPerSecond} pkt/s
+          </span>
         </div>
         <div style={{...styles.statCard, borderTopColor: '#dc2626'}}>
           <h3 style={styles.statLabel}>Threats Detected</h3>
@@ -481,6 +659,11 @@ function LiveMonitoring() {
                     <span style={styles.packetNumber}>#{packet.packetNumber}</span>
                     <span style={styles.packetTime}>{formatTimestamp(packet.timestamp)}</span>
                     <span style={styles.modeIndicator}>[{packet.mode}]</span>
+                    {packet.dataSource && (
+                      <span style={{...styles.modeIndicator, color: '#10b981', fontWeight: 'bold'}}>
+                        {packet.dataSource}
+                      </span>
+                    )}
                   </div>
                   <span 
                     style={{
@@ -494,21 +677,67 @@ function LiveMonitoring() {
                   </span>
                 </div>
 
-                <div style={styles.detailRow}>
-                  <span style={styles.detailLabel}>Port:</span>
-                  <span style={styles.detailValue}>{packet.destination_port}</span>
-                </div>
-                <div style={styles.detailRow}>
-                  <span style={styles.detailLabel}>Duration:</span>
-                  <span style={styles.detailValue}>{packet.flow_duration}ms</span>
-                </div>
-                <div style={styles.detailRow}>
-                  <span style={styles.detailLabel}>Packets:</span>
-                  <span style={styles.detailValue}>
-                    {packet.total_fwd_packets + packet.total_backward_packets}
-                    ({packet.total_fwd_packets} fwd / {packet.total_backward_packets} bwd)
-                  </span>
-                </div>
+                {/* VPC Flow specific fields */}
+                {packet.source_ip && (
+                  <>
+                    <div style={styles.detailRow}>
+                      <span style={styles.detailLabel}>Source IP:</span>
+                      <span style={{...styles.detailValue, fontFamily: 'monospace', fontWeight: 'bold'}}>
+                        {packet.source_ip}:{packet.source_port}
+                      </span>
+                    </div>
+                    <div style={styles.detailRow}>
+                      <span style={styles.detailLabel}>Dest IP:</span>
+                      <span style={{...styles.detailValue, fontFamily: 'monospace', fontWeight: 'bold'}}>
+                        {packet.dest_ip}:{packet.destination_port}
+                      </span>
+                    </div>
+                    {packet.action && (
+                      <div style={styles.detailRow}>
+                        <span style={styles.detailLabel}>VPC Action:</span>
+                        <span style={{
+                          ...styles.detailValue, 
+                          color: packet.action === 'ACCEPT' ? '#10b981' : '#dc2626',
+                          fontWeight: 'bold'
+                        }}>
+                          {packet.action}
+                        </span>
+                      </div>
+                    )}
+                    <div style={styles.detailRow}>
+                      <span style={styles.detailLabel}>Protocol:</span>
+                      <span style={styles.detailValue}>{packet.protocol}</span>
+                    </div>
+                    {packet.bytes > 0 && (
+                      <div style={styles.detailRow}>
+                        <span style={styles.detailLabel}>Bytes:</span>
+                        <span style={styles.detailValue}>{packet.bytes.toLocaleString()}</span>
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {/* Standard packet fields */}
+                {!packet.source_ip && (
+                  <>
+                    <div style={styles.detailRow}>
+                      <span style={styles.detailLabel}>Port:</span>
+                      <span style={styles.detailValue}>{packet.destination_port}</span>
+                    </div>
+                    <div style={styles.detailRow}>
+                      <span style={styles.detailLabel}>Duration:</span>
+                      <span style={styles.detailValue}>{packet.flow_duration}ms</span>
+                    </div>
+                    <div style={styles.detailRow}>
+                      <span style={styles.detailLabel}>Packets:</span>
+                      <span style={styles.detailValue}>
+                        {packet.total_fwd_packets + packet.total_backward_packets}
+                        ({packet.total_fwd_packets} fwd / {packet.total_backward_packets} bwd)
+                      </span>
+                    </div>
+                  </>
+                )}
+
                 <div style={styles.detailRow}>
                   <span style={styles.detailLabel}>Confidence:</span>
                   <div style={styles.confidenceContainer}>
@@ -527,6 +756,23 @@ function LiveMonitoring() {
                     </span>
                   </div>
                 </div>
+
+                {/* Show top features for attacks */}
+                {packet.is_attack && packet.top_features && packet.top_features.length > 0 && (
+                  <div style={{
+                    marginTop: '12px',
+                    padding: '8px',
+                    backgroundColor: '#fee2e2',
+                    borderRadius: '6px',
+                    fontSize: '12px',
+                    color: '#991b1b'
+                  }}>
+                    <strong>🚨 Key Attack Indicators:</strong>
+                    <div style={{ marginTop: '4px' }}>
+                      {packet.top_features.slice(0, 3).join(', ')}
+                    </div>
+                  </div>
+                )}
 
                 {packet.warning && (
                   <div style={styles.warningBanner}>

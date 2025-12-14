@@ -1,10 +1,13 @@
 export const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
 export const API_ENDPOINTS = {
+  BASE_URL: API_URL,
   health: `${API_URL}/health`,
   predictSimple: `${API_URL}/predict/simple`,
   predictFull: `${API_URL}/predict/full`,
   docs: `${API_URL}/docs`,
+  flowsReal: `${API_URL}/flows/real`,
+  analyzeVPCFlow: `${API_URL}/analyze/vpc-flow`,
 };
 
 // API helper function for consistent error handling
